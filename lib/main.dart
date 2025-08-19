@@ -19,10 +19,12 @@ void main() async {
 
 class ProminalApp extends StatelessWidget {
   final EnvironmentManager environmentManager;
+  final bool autoStartSession;
 
   const ProminalApp({
     Key? key,
     required this.environmentManager,
+    this.autoStartSession = true,
   }) : super(key: key);
 
   @override
@@ -36,17 +38,22 @@ class ProminalApp extends StatelessWidget {
       ),
       debugShowCheckedModeBanner: false,
       // The HomePage is where the main logic resides.
-      home: HomePage(environmentManager: environmentManager),
+      home: HomePage(
+        environmentManager: environmentManager,
+        autoStartSession: autoStartSession,
+      ),
     );
   }
 }
 
 class HomePage extends StatefulWidget {
   final EnvironmentManager environmentManager;
+  final bool autoStartSession;
 
   const HomePage({
     Key? key,
     required this.environmentManager,
+    this.autoStartSession = true,
   }) : super(key: key);
 
   @override
@@ -71,8 +78,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     if (!widget.environmentManager.isSetupComplete()) {
       _performInitialSetup();
     } else {
-      // If setup is already done, create a normal session immediately.
-      _createInitialSession();
+      // If setup is already done, create a normal session immediately unless disabled.
+      if (widget.autoStartSession) {
+        _createInitialSession();
+      }
     }
     
     // Listen for changes in the session list (additions/removals).
@@ -94,9 +103,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       // 1. Prepare the files on the Dart side (copying, unpacking, etc.).
       // Add timeout to prevent hanging
       await widget.environmentManager.setupEnvironment().timeout(
-        const Duration(minutes: 5),
+        const Duration(minutes: 30),
         onTimeout: () {
-          throw Exception("Setup timed out after 5 minutes. Please check your device storage and try again.");
+          throw Exception("Setup timed out after 30 minutes. Please check your device storage and try again.");
         },
       );
       
@@ -112,11 +121,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       print("Prominal: Setup session created");
       
       // Start a timeout timer for the setup session
-      _setupTimeoutTimer = Timer(const Duration(minutes: 10), () {
+      _setupTimeoutTimer = Timer(const Duration(minutes: 30), () {
         if (_isSetupInProgress && mounted) {
           print("Prominal: Setup session timeout - session may be hanging");
           setState(() {
-            _setupError = "Setup session is taking too long (10+ minutes). The bootstrap script may be hanging. Try resetting the environment.";
+            _setupError = "Setup session is taking too long (30+ minutes). The bootstrap script may be hanging. Try resetting the environment.";
             _isSetupInProgress = false;
           });
         }

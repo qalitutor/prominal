@@ -34,12 +34,13 @@ class EnvironmentManager {
   Future<void> _initializePaths() async {
     // Use our native implementation to get application support directory
     final appSupportDir = await PathProviderNative.getApplicationSupportDirectoryAsync();
-    // Canonicalize the path to avoid /data/user/0 symlink issues
-    final canonicalPath = await Directory(appSupportDir).resolveSymbolicLinks();
-    _appDataPath = canonicalPath;
+    // Avoid resolveSymbolicLinks on Android; keep the real internal path.
+    _appDataPath = appSupportDir;
+    // Place executable proot in code_cache which is more permissive for exec
+    final execBase = await PathProviderNative.getExecutableCacheDirectoryAsync();
     _usrPath = '${_appDataPath}/usr';
     _homePath = '${_appDataPath}/home';
-    _prootPath = '${_appDataPath}/proot';
+    _prootPath = '$execBase/proot';
     _libPath = '${_appDataPath}/lib';
     _tmpPath = '${_appDataPath}/tmp';
     
@@ -60,6 +61,10 @@ class EnvironmentManager {
   
   /// Check if the environment setup is complete
   bool isSetupComplete() {
+    // Android requires a one-time proot/rootfs setup. Desktop platforms use the host shell.
+    if (!Platform.isAndroid) {
+      return true;
+    }
     final setupFlag = File('${_appDataPath}/$_setupFlagFile');
     return setupFlag.existsSync();
   }
@@ -78,21 +83,22 @@ class EnvironmentManager {
   
   /// Setup the complete environment
   Future<void> setupEnvironment() async {
-    print('EnvironmentManager: Starting environment setup...');
-    
-    try {
-      // Step 1: Extract proot binary and libraries
-      await _extractProotAndLibs();
-      
-      // Step 2: Extract Debian rootfs in background
-      await _extractRootfsInBackground();
-      
-      // Step 3: Set up permissions
-      await _setupPermissions();
-      
-      // Step 4: Create setup completion flag
+    // Only Android arm64 needs the proot/rootfs bootstrap. Skip on desktop and non-arm64 Android.
+    if (!Platform.isAndroid) {
+      return;
+    }
+    if (!_isArm64DeviceSync()) {
+      print('EnvironmentManager: Non-arm64 Android device detected; skipping proot/rootfs setup');
       await _createSetupFlag();
-      
+      return;
+    }
+
+    print('EnvironmentManager: Starting environment setup...');
+    try {
+      await _extractProotAndLibs();
+      await _extractRootfsInBackground();
+      await _setupPermissions();
+      await _createSetupFlag();
       print('EnvironmentManager: Environment setup completed successfully');
     } catch (e) {
       print('EnvironmentManager: Setup failed: $e');
@@ -125,7 +131,7 @@ class EnvironmentManager {
         
         // Make executable if it's the proot binary
         if (fileName == _prootBinary) {
-          await Process.run('chmod', ['+x', file.path]);
+          await Process.run('chmod', ['700', file.path]);
         }
         
         print('EnvironmentManager: Extracted $fileName');
@@ -215,7 +221,7 @@ class EnvironmentManager {
         
         // Method 1: Try chmod
         try {
-          final result = await Process.run('chmod', ['+x', prootFile.path]);
+          final result = await Process.run('chmod', ['700', prootFile.path]);
           if (result.exitCode == 0) {
             print('EnvironmentManager: Set proot binary permissions using chmod');
             permissionsOk = true;
@@ -264,13 +270,53 @@ class EnvironmentManager {
     await flagFile.writeAsString('Setup completed at ${DateTime.now().toIso8601String()}');
   }
   
-  /// Get the initial command for setup
+  /// Get the initial command for the interactive shell
   List<String> getInitialCommand() {
-    return getProotCommandWithFallback(
-      rootfsPath: _usrPath,
-      shellPath: '/bin/bash',
-      shellArgs: ['--login'],
-    );
+    // On Android, launch the Debian environment via proot.
+    if (Platform.isAndroid) {
+      if (_isArm64DeviceSync()) {
+        return getProotCommandWithFallback(
+          rootfsPath: _usrPath,
+          shellPath: '/bin/bash',
+          shellArgs: ['--login'],
+        );
+      }
+      // Fallback: host Android shell on non-arm64 devices/emulators.
+      return ['/system/bin/sh'];
+    }
+
+    // On desktop platforms, launch the host system shell directly.
+    if (Platform.isWindows) {
+      // Prefer PowerShell if available, otherwise fallback to cmd
+      return ['powershell.exe'];
+    }
+
+    // macOS/Linux/iOS default to a POSIX shell
+    final String shellPath = File('/bin/zsh').existsSync()
+        ? '/bin/zsh'
+        : (File('/bin/bash').existsSync() ? '/bin/bash' : '/bin/sh');
+    return [shellPath, '--login'];
+  }
+
+  /// Best-effort synchronous detection of arm64 on Android
+  static bool _isArm64DeviceSync() {
+    if (!Platform.isAndroid) return false;
+    try {
+      final abi = Process.runSync('getprop', ['ro.product.cpu.abi']);
+      final out = (abi.stdout is String) ? (abi.stdout as String).toLowerCase().trim() : '';
+      if (out.contains('arm64') || out.contains('aarch64')) return true;
+    } catch (_) {}
+    try {
+      final abis = Process.runSync('getprop', ['ro.product.cpu.abilist']);
+      final out = (abis.stdout is String) ? (abis.stdout as String).toLowerCase() : '';
+      if (out.contains('arm64') || out.contains('aarch64')) return true;
+    } catch (_) {}
+    try {
+      final u = Process.runSync('uname', ['-m']);
+      final out = (u.stdout is String) ? (u.stdout as String).toLowerCase().trim() : '';
+      if (out.contains('aarch64') || out.contains('arm64')) return true;
+    } catch (_) {}
+    return false;
   }
   
   /// Get proot command with fallback options
@@ -397,7 +443,7 @@ class EnvironmentManager {
       
       // Method 1: chmod
       try {
-        final result = await Process.run('chmod', ['+x', prootFile.path]);
+        final result = await Process.run('chmod', ['700', prootFile.path]);
         if (result.exitCode == 0) {
           print('EnvironmentManager: Successfully set permissions with chmod');
           success = true;
@@ -439,4 +485,4 @@ class EnvironmentManager {
       'rootfsExists': Directory('${_usrPath}/bin').existsSync(),
     };
   }
-} 
+}

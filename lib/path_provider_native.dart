@@ -6,14 +6,14 @@ class PathProviderNative {
   /// Get the application support directory path for the current platform
   static String getApplicationSupportDirectory() {
     if (Platform.isAndroid) {
-      // Android: Use external storage or internal app directory
-      final externalStorage = Platform.environment['EXTERNAL_STORAGE'];
-      if (externalStorage != null) {
-        return '$externalStorage/Android/data/com.prominal.app/files';
-      } else {
-        // Fallback to internal storage
-        return '/data/data/com.prominal.app/files';
+      // Android: Always use internal app-private storage so we can execute binaries.
+      const packageName = 'com.prominal';
+      final primary = '/data/user/0/$packageName/files';
+      final legacy = '/data/data/$packageName/files';
+      if (Directory(primary).existsSync()) {
+        return primary;
       }
+      return legacy;
     } else if (Platform.isIOS) {
       // iOS: Use app's Documents directory
       final home = Platform.environment['HOME'];
@@ -71,5 +71,21 @@ class PathProviderNative {
     final path = getApplicationSupportDirectory();
     await ensureDirectoryExists();
     return path;
+  }
+
+  /// Get a code-cache directory appropriate for placing executable files.
+  /// On Android this maps to /data/user/0/<package>/code_cache/prominal
+  static Future<String> getExecutableCacheDirectoryAsync() async {
+    if (Platform.isAndroid) {
+      const packageName = 'com.prominal';
+      final base = '/data/user/0/$packageName/code_cache/prominal';
+      final dir = Directory(base);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+      return base;
+    }
+    // Fallback to application support on other platforms
+    return getApplicationSupportDirectoryAsync();
   }
 } 
